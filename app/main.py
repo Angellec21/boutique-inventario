@@ -18,10 +18,31 @@ from .inventario import (
     NoEncontrado,
     StockInsuficiente,
 )
-from .models import Movimiento, Producto, Sucursal, Variante
-from .schemas import AjusteIn, IngresoIn, MatrizIn, ProductoIn, SucursalIn, VarianteIn
+from .models import Movimiento, Producto, Sucursal, Transferencia, Variante
+from .schemas import (
+    AjusteIn,
+    AnulacionIn,
+    IngresoIn,
+    MatrizIn,
+    ProductoIn,
+    RecepcionIn,
+    SucursalIn,
+    TransferenciaIn,
+    VarianteIn,
+)
 
 _ESTADOS = {NoEncontrado: 404, Conflicto: 409, StockInsuficiente: 409}
+_ESTADOS_TRANSFERENCIA = ("en_transito", "recibida", "recibida_con_diferencias", "anulada")
+
+
+def _vista_transferencia(i: Inventario, t: Transferencia) -> dict:
+    return {
+        **t.model_dump(),
+        "origen": i.sucursales[t.origen_id].codigo,
+        "destino": i.sucursales[t.destino_id].codigo,
+        "unidades_enviadas": t.unidades_enviadas,
+        "unidades_faltantes": t.unidades_faltantes,
+    }
 
 
 def create_app(inventario: Optional[Inventario] = None) -> FastAPI:
@@ -74,7 +95,11 @@ def create_app(inventario: Optional[Inventario] = None) -> FastAPI:
             **prod.model_dump(mode="json"),
             "margen": str(prod.margen),
             "variantes": [
-                {**v.model_dump(), "stock_total": i.stock_total(v.id)}
+                {
+                    **v.model_dump(),
+                    "stock_total": i.stock_total(v.id),
+                    "en_transito": i.en_transito(v.id),
+                }
                 for v in i.variantes_de(producto_id)
             ],
         }
@@ -104,14 +129,14 @@ def create_app(inventario: Optional[Inventario] = None) -> FastAPI:
         return i.variante_por_sku(sku)
 
     # --------------------------------------------------------------------- stock
+    def resolver_variante(variante_id: Optional[int], sku: Optional[str], i: Inventario) -> int:
+        if variante_id is None and not sku:
+            raise HTTPException(422, "Cada ítem necesita variante_id o sku")
+        return variante_id if variante_id is not None else i.variante_por_sku(sku).id
+
     @app.post("/stock/ingresos", status_code=201, response_model=list[Movimiento], tags=["stock"])
     def ingreso(datos: IngresoIn, i: Inventario = Depends(inv)):
-        items = []
-        for it in datos.items:
-            if it.variante_id is None and not it.sku:
-                raise HTTPException(422, "Cada ítem necesita variante_id o sku")
-            vid = it.variante_id if it.variante_id is not None else i.variante_por_sku(it.sku).id
-            items.append((vid, it.cantidad))
+        items = [(resolver_variante(it.variante_id, it.sku, i), it.cantidad) for it in datos.items]
         return i.registrar_ingreso(datos.sucursal_id, items, datos.referencia)
 
     @app.post("/stock/ajustes", status_code=201, response_model=Movimiento, tags=["stock"])
@@ -131,6 +156,46 @@ def create_app(inventario: Optional[Inventario] = None) -> FastAPI:
     @app.get("/variantes/{variante_id}/kardex", response_model=list[Movimiento], tags=["stock"])
     def kardex(variante_id: int, sucursal_id: Optional[int] = None, i: Inventario = Depends(inv)):
         return i.kardex(variante_id, sucursal_id)
+
+    # ------------------------------------------------------------ transferencias
+    @app.post("/transferencias", status_code=201, tags=["transferencias"], summary="Enviar mercadería")
+    def enviar(datos: TransferenciaIn, i: Inventario = Depends(inv)):
+        items = [(resolver_variante(it.variante_id, it.sku, i), it.cantidad) for it in datos.items]
+        trf = i.enviar_transferencia(datos.origen_id, datos.destino_id, items, datos.nota)
+        return _vista_transferencia(i, trf)
+
+    @app.get("/transferencias", tags=["transferencias"])
+    def listar_transferencias(
+        sucursal_id: Optional[int] = None,
+        estado: Optional[str] = None,
+        i: Inventario = Depends(inv),
+    ):
+        if estado is not None and estado not in _ESTADOS_TRANSFERENCIA:
+            raise HTTPException(422, f"Estado inválido. Use: {', '.join(_ESTADOS_TRANSFERENCIA)}")
+        if sucursal_id is not None:
+            i.obtener_sucursal(sucursal_id)
+        return [_vista_transferencia(i, t) for t in i.listar_transferencias(sucursal_id, estado)]
+
+    @app.get("/transferencias/{transferencia_id}", tags=["transferencias"])
+    def detalle_transferencia(transferencia_id: int, i: Inventario = Depends(inv)):
+        return _vista_transferencia(i, i.obtener_transferencia(transferencia_id))
+
+    @app.post(
+        "/transferencias/{transferencia_id}/recepcion",
+        tags=["transferencias"],
+        summary="Confirmar llegada al destino",
+    )
+    def recibir(transferencia_id: int, datos: RecepcionIn, i: Inventario = Depends(inv)):
+        recibidos: dict[int, int] = {}
+        for it in datos.items:
+            vid = resolver_variante(it.variante_id, it.sku, i)
+            recibidos[vid] = recibidos.get(vid, 0) + it.cantidad
+        trf = i.recibir_transferencia(transferencia_id, recibidos, datos.observacion)
+        return _vista_transferencia(i, trf)
+
+    @app.post("/transferencias/{transferencia_id}/anulacion", tags=["transferencias"])
+    def anular(transferencia_id: int, datos: AnulacionIn, i: Inventario = Depends(inv)):
+        return _vista_transferencia(i, i.anular_transferencia(transferencia_id, datos.motivo))
 
     return app
 

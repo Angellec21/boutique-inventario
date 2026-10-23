@@ -52,3 +52,33 @@ class AjusteIn(BaseModel):
     sucursal_id: int
     cantidad_real: int = Field(ge=0)
     motivo: str = Field(min_length=3, examples=["Conteo físico semanal"])
+
+
+class ItemTransferenciaIn(BaseModel):
+    variante_id: Optional[int] = None
+    sku: Optional[str] = Field(default=None, examples=["VES-020-ROJ-M"])
+    cantidad: int = Field(gt=0)
+
+
+class TransferenciaIn(BaseModel):
+    origen_id: int
+    destino_id: int
+    nota: str = Field(default="", examples=["Reposición de vitrina para el fin de semana"])
+    items: list[ItemTransferenciaIn] = Field(min_length=1)
+
+
+class ItemRecibidoIn(BaseModel):
+    variante_id: Optional[int] = None
+    sku: Optional[str] = None
+    cantidad: int = Field(ge=0)
+
+
+class RecepcionIn(BaseModel):
+    """Si ``items`` está vacío se asume que llegó todo lo enviado."""
+
+    items: list[ItemRecibidoIn] = Field(default_factory=list)
+    observacion: str = Field(default="", examples=["Faltó una prenda en la bolsa"])
+
+
+class AnulacionIn(BaseModel):
+    motivo: str = Field(min_length=3, examples=["El envío no salió de la tienda"])
