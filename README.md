@@ -8,7 +8,7 @@
 
 API de inventario para **tiendas de ropa con varias sucursales**: cada prenda se controla por **talla y color**, con stock separado por tienda, alertas de reposición y kardex de movimientos. Montos en **bolivianos (Bs)**.
 
-> 🚧 **En desarrollo.** Hoy funciona el catálogo, las variantes y el stock por sucursal. Las transferencias, ventas y reportes llegan en las próximas versiones (ver [Roadmap](#-roadmap)).
+> 🚧 **En desarrollo.** Hoy funciona el catálogo, las variantes, el stock por sucursal y las transferencias entre tiendas. Las ventas y reportes llegan en las próximas versiones (ver [Roadmap](#-roadmap)).
 
 ## 💼 El problema
 
@@ -31,6 +31,7 @@ Boutique Inventario responde esas preguntas con una API que puede usar un sistem
 | **Kardex** | Cada movimiento queda registrado con cantidad, saldo, motivo y referencia (p. ej. n.º de pedido) |
 | **Matriz de stock** | Tabla talla × color por producto, en una sucursal o en todas, con valor de la mercadería en Bs |
 | **Alertas de reposición** | Variantes en o por debajo de su stock mínimo, con cuánto falta y cuánto hay en otras sucursales (para transferir antes de comprar) |
+| **Transferencias** | Envío entre sucursales con código `TRF-00001`: el stock sale del origen y queda **en tránsito** hasta que el destino confirma. Recepción con conteo y registro de faltantes, o anulación con devolución al origen |
 
 ## 🛠️ Tecnologías
 
@@ -43,16 +44,30 @@ Boutique Inventario responde esas preguntas con una API que puede usar un sistem
 
 ```
 app/
-├── models.py      # Modelos de dominio: Sucursal, Producto, Variante, Movimiento
-├── inventario.py  # Reglas de negocio (servicio): SKU, stock, ajustes, alertas
+├── models.py      # Modelos de dominio: Sucursal, Producto, Variante, Movimiento, Transferencia
+├── inventario.py  # Reglas de negocio (servicio): SKU, stock, ajustes, alertas, transferencias
 ├── schemas.py     # Esquemas de entrada de la API
 └── main.py        # Rutas FastAPI y mapeo de errores de negocio a HTTP
 tests/
-├── test_inventario.py  # Pruebas del servicio
-└── test_api.py         # Pruebas de los endpoints
+├── test_inventario.py          # Pruebas del servicio
+├── test_transferencias.py      # Ciclo de vida de las transferencias
+├── test_api.py                 # Pruebas de los endpoints
+└── test_api_transferencias.py  # Endpoints de transferencias
 ```
 
 La lógica de negocio vive en `Inventario`, sin depender de FastAPI: se prueba de forma aislada y la persistencia se puede cambiar sin tocar las rutas. Los errores de negocio se traducen a HTTP: `404` (no existe), `409` (duplicado o stock insuficiente) y `422` (dato inválido).
+
+### Ciclo de una transferencia
+
+```mermaid
+stateDiagram-v2
+    [*] --> en_transito: envío (sale stock del origen)
+    en_transito --> recibida: llegó todo
+    en_transito --> recibida_con_diferencias: llegó menos (observación obligatoria)
+    en_transito --> anulada: el stock vuelve al origen
+```
+
+Cada paso genera movimientos en el kardex con el código de la transferencia como referencia, así se puede rastrear una prenda de una tienda a otra.
 
 ## 🚀 Instalación
 
@@ -92,6 +107,12 @@ curl -X POST localhost:8000/stock/ingresos -H 'Content-Type: application/json' \
 # 4. ¿Qué hay y qué falta?
 curl localhost:8000/productos/1/stock
 curl localhost:8000/sucursales/1/alertas
+
+# 5. Enviar 2 blusas M al mall y confirmar la llegada (faltó 1)
+curl -X POST localhost:8000/transferencias -H 'Content-Type: application/json' \
+  -d '{"origen_id":1,"destino_id":2,"nota":"Vitrina fin de semana","items":[{"sku":"BLU-001-NEG-M","cantidad":2}]}'
+curl -X POST localhost:8000/transferencias/1/recepcion -H 'Content-Type: application/json' \
+  -d '{"items":[{"sku":"BLU-001-NEG-M","cantidad":1}],"observacion":"Faltó 1 en la bolsa"}'
 ```
 
 Ejemplo de matriz de stock (`GET /productos/1/stock`):
@@ -122,13 +143,18 @@ Ejemplo de matriz de stock (`GET /productos/1/stock`):
 | `GET` | `/productos/{id}/stock` | Matriz talla × color (`?sucursal_id=`) |
 | `GET` | `/sucursales/{id}/alertas` | Variantes por reponer |
 | `GET` | `/variantes/{id}/kardex` | Historial de movimientos |
+| `POST` | `/transferencias` | Enviar mercadería a otra sucursal |
+| `GET` | `/transferencias` | Listar (`?sucursal_id=`, `?estado=en_transito`) |
+| `GET` | `/transferencias/{id}` | Detalle con unidades enviadas y faltantes |
+| `POST` | `/transferencias/{id}/recepcion` | Confirmar llegada (todo o lo contado) |
+| `POST` | `/transferencias/{id}/anulacion` | Anular el envío; el stock vuelve al origen |
 
 ## 🗺️ Roadmap
 
 - [x] Catálogo con variantes por talla y color
 - [x] Stock por sucursal, ajustes y kardex
 - [x] Alertas de stock mínimo
-- [ ] Transferencias entre sucursales (envío y recepción)
+- [x] Transferencias entre sucursales (envío, recepción con faltantes y anulación)
 - [ ] Ventas con descuento de stock y anulaciones
 - [ ] Reportes: más vendidos, tallas que más rotan, valor de inventario por sucursal
 - [ ] Usuarios y roles (encargado de tienda / administrador)
