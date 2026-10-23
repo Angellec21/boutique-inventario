@@ -86,8 +86,44 @@ class Movimiento(BaseModel):
     id: int
     variante_id: int
     sucursal_id: int
-    tipo: str  # ingreso | ajuste
+    tipo: str  # ingreso | ajuste | transferencia_salida | transferencia_entrada
     cantidad: int  # positiva entra, negativa sale
     saldo: int
     motivo: str = ""
     referencia: Optional[str] = None
+
+
+class ItemTransferencia(BaseModel):
+    variante_id: int
+    sku: str
+    enviado: int = Field(gt=0)
+    recibido: Optional[int] = None
+
+    @property
+    def faltante(self) -> int:
+        return 0 if self.recibido is None else self.enviado - self.recibido
+
+
+class Transferencia(BaseModel):
+    """Traspaso de mercadería entre sucursales.
+
+    Ciclo de vida: ``en_transito`` → ``recibida`` (o ``recibida_con_diferencias``
+    si llegó menos de lo enviado) o ``anulada`` (el stock vuelve al origen).
+    """
+
+    id: int
+    codigo: str
+    origen_id: int
+    destino_id: int
+    estado: str = "en_transito"
+    items: list[ItemTransferencia]
+    nota: str = ""
+    observacion_recepcion: str = ""
+
+    @property
+    def unidades_enviadas(self) -> int:
+        return sum(i.enviado for i in self.items)
+
+    @property
+    def unidades_faltantes(self) -> int:
+        return sum(i.faltante for i in self.items)

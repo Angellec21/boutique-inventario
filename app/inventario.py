@@ -13,9 +13,11 @@ from typing import Iterable, Optional
 
 from .models import (
     TALLAS_LETRA,
+    ItemTransferencia,
     Movimiento,
     Producto,
     Sucursal,
+    Transferencia,
     Variante,
     normalizar_color,
     normalizar_talla,
@@ -60,6 +62,7 @@ class Inventario:
         self.productos: dict[int, Producto] = {}
         self.variantes: dict[int, Variante] = {}
         self.movimientos: list[Movimiento] = []
+        self.transferencias: dict[int, Transferencia] = {}
         # (variante_id, sucursal_id) -> cantidad
         self._stock: dict[tuple[int, int], int] = defaultdict(int)
         self._seq: dict[str, int] = defaultdict(int)
@@ -320,6 +323,160 @@ class Inventario:
             for m in self.movimientos
             if m.variante_id == variante_id and (sucursal_id is None or m.sucursal_id == sucursal_id)
         ]
+
+    # ------------------------------------------------------------ transferencias
+    def enviar_transferencia(
+        self,
+        origen_id: int,
+        destino_id: int,
+        items: list[tuple[int, int]],
+        nota: str = "",
+    ) -> Transferencia:
+        """Despacha mercadería de una sucursal a otra.
+
+        El stock sale del origen en el momento del envío y queda «en tránsito»
+        hasta que el destino confirma la recepción. Todo o nada: si falta stock
+        de una sola variante no se mueve nada.
+        """
+        self.obtener_sucursal(origen_id)
+        self.obtener_sucursal(destino_id)
+        if origen_id == destino_id:
+            raise ErrorInventario("El origen y el destino deben ser sucursales distintas")
+        if not items:
+            raise ErrorInventario("La transferencia no tiene ítems")
+        agrupado: dict[int, int] = {}
+        for variante_id, cantidad in items:
+            self.obtener_variante(variante_id)
+            if cantidad <= 0:
+                raise ErrorInventario("Las cantidades a transferir deben ser positivas")
+            agrupado[variante_id] = agrupado.get(variante_id, 0) + cantidad
+        for variante_id, cantidad in agrupado.items():
+            disponible = self.stock(variante_id, origen_id)
+            if disponible < cantidad:
+                raise StockInsuficiente(
+                    f"Stock insuficiente de {self.variantes[variante_id].sku} en "
+                    f"{self.sucursales[origen_id].codigo}: hay {disponible}, se quiere enviar {cantidad}"
+                )
+        tid = self._siguiente_id("transferencia")
+        codigo = f"TRF-{tid:05d}"
+        destino = self.sucursales[destino_id].codigo
+        for variante_id, cantidad in agrupado.items():
+            self._mover(
+                variante_id, origen_id, -cantidad, "transferencia_salida", f"Envío a {destino}", codigo
+            )
+        trf = Transferencia(
+            id=tid,
+            codigo=codigo,
+            origen_id=origen_id,
+            destino_id=destino_id,
+            items=[
+                ItemTransferencia(variante_id=v, sku=self.variantes[v].sku, enviado=c)
+                for v, c in agrupado.items()
+            ],
+            nota=nota.strip(),
+        )
+        self.transferencias[tid] = trf
+        return trf
+
+    def obtener_transferencia(self, transferencia_id: int) -> Transferencia:
+        try:
+            return self.transferencias[transferencia_id]
+        except KeyError:
+            raise NoEncontrado(f"Transferencia {transferencia_id} no existe") from None
+
+    def _pendiente(self, transferencia_id: int) -> Transferencia:
+        trf = self.obtener_transferencia(transferencia_id)
+        if trf.estado != "en_transito":
+            raise Conflicto(f"La transferencia {trf.codigo} ya está {trf.estado.replace('_', ' ')}")
+        return trf
+
+    def recibir_transferencia(
+        self,
+        transferencia_id: int,
+        recibidos: Optional[dict[int, int]] = None,
+        observacion: str = "",
+    ) -> Transferencia:
+        """Confirma la llegada al destino.
+
+        Sin ``recibidos`` se asume que llegó todo. Si se indica lo contado por
+        variante y es menos de lo enviado, la diferencia queda como faltante y
+        la transferencia pasa a ``recibida_con_diferencias`` (exige observación).
+        """
+        trf = self._pendiente(transferencia_id)
+        recibidos = recibidos or {}
+        enviados = {i.variante_id for i in trf.items}
+        extra = set(recibidos) - enviados
+        if extra:
+            raise ErrorInventario(
+                f"Variantes que no son parte de {trf.codigo}: {sorted(extra)}"
+            )
+        cantidades = {}
+        for item in trf.items:
+            cant = recibidos.get(item.variante_id, item.enviado)
+            if cant < 0 or cant > item.enviado:
+                raise ErrorInventario(
+                    f"{item.sku}: se recibió {cant} pero se enviaron {item.enviado}"
+                )
+            cantidades[item.variante_id] = cant
+        con_diferencias = any(cantidades[i.variante_id] < i.enviado for i in trf.items)
+        if con_diferencias and not observacion.strip():
+            raise ErrorInventario(
+                "Llegó menos de lo enviado: registre una observación (p. ej. «faltó 1 en la caja»)"
+            )
+        origen = self.sucursales[trf.origen_id].codigo
+        for item in trf.items:
+            item.recibido = cantidades[item.variante_id]
+            if item.recibido:
+                self._mover(
+                    item.variante_id,
+                    trf.destino_id,
+                    item.recibido,
+                    "transferencia_entrada",
+                    f"Recepción desde {origen}",
+                    trf.codigo,
+                )
+        trf.estado = "recibida_con_diferencias" if con_diferencias else "recibida"
+        trf.observacion_recepcion = observacion.strip()
+        return trf
+
+    def anular_transferencia(self, transferencia_id: int, motivo: str) -> Transferencia:
+        """Cancela un envío que no llegó: el stock regresa a la sucursal de origen."""
+        if not motivo.strip():
+            raise ErrorInventario("Para anular una transferencia indique el motivo")
+        trf = self._pendiente(transferencia_id)
+        for item in trf.items:
+            self._mover(
+                item.variante_id,
+                trf.origen_id,
+                item.enviado,
+                "transferencia_entrada",
+                f"Anulación: {motivo.strip()}",
+                trf.codigo,
+            )
+        trf.estado = "anulada"
+        trf.observacion_recepcion = motivo.strip()
+        return trf
+
+    def listar_transferencias(
+        self, sucursal_id: Optional[int] = None, estado: Optional[str] = None
+    ) -> list[Transferencia]:
+        """Transferencias donde la sucursal es origen o destino, opcionalmente por estado."""
+        return [
+            t
+            for t in self.transferencias.values()
+            if (sucursal_id is None or sucursal_id in (t.origen_id, t.destino_id))
+            and (estado is None or t.estado == estado)
+        ]
+
+    def en_transito(self, variante_id: Optional[int] = None) -> int:
+        """Unidades despachadas que todavía no confirmó ninguna sucursal."""
+        return sum(
+            i.enviado
+            for t in self.transferencias.values()
+            if t.estado == "en_transito"
+            for i in t.items
+            if variante_id is None or i.variante_id == variante_id
+        )
 
 
 TALLAS_LETRA_ORDEN = {t: i for i, t in enumerate((*TALLAS_LETRA, "UNICA"))}
