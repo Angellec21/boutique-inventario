@@ -1,4 +1,4 @@
-"""Servicio de inventario: catálogo, variantes por talla/color y stock por sucursal.
+"""Servicio de inventario: catálogo, variantes por talla/color, stock por sucursal y ventas.
 
 Los datos viven en memoria; la capa de persistencia se agrega más adelante
 sin cambiar esta interfaz.
@@ -8,17 +8,21 @@ from __future__ import annotations
 
 import unicodedata
 from collections import defaultdict
+from datetime import datetime
 from decimal import Decimal
 from typing import Iterable, Optional
 
 from .models import (
+    METODOS_PAGO,
     TALLAS_LETRA,
     ItemTransferencia,
+    ItemVenta,
     Movimiento,
     Producto,
     Sucursal,
     Transferencia,
     Variante,
+    Venta,
     normalizar_color,
     normalizar_talla,
 )
@@ -63,6 +67,7 @@ class Inventario:
         self.variantes: dict[int, Variante] = {}
         self.movimientos: list[Movimiento] = []
         self.transferencias: dict[int, Transferencia] = {}
+        self.ventas: dict[int, Venta] = {}
         # (variante_id, sucursal_id) -> cantidad
         self._stock: dict[tuple[int, int], int] = defaultdict(int)
         self._seq: dict[str, int] = defaultdict(int)
@@ -477,6 +482,136 @@ class Inventario:
             for i in t.items
             if variante_id is None or i.variante_id == variante_id
         )
+
+    # -------------------------------------------------------------------- ventas
+    DESCUENTO_MAXIMO = Decimal("50")
+
+    def registrar_venta(
+        self,
+        sucursal_id: int,
+        items: list[tuple[int, int] | tuple[int, int, Decimal | str | float]],
+        metodo_pago: str = "efectivo",
+        monto_recibido: Decimal | str | float | None = None,
+        vendedor: str = "",
+        fecha: Optional[datetime] = None,
+    ) -> Venta:
+        """Registra una venta en caja y descuenta el stock de la sucursal.
+
+        Cada ítem es ``(variante_id, cantidad)`` o ``(variante_id, cantidad, descuento_pct)``.
+        Todo o nada: si falta stock de una prenda no se descuenta nada. En efectivo
+        se exige el monto recibido para calcular el cambio.
+        """
+        suc = self.obtener_sucursal(sucursal_id)
+        metodo = metodo_pago.strip().lower()
+        if metodo not in METODOS_PAGO:
+            raise ErrorInventario(f"Método de pago inválido. Use: {', '.join(METODOS_PAGO)}")
+        if not items:
+            raise ErrorInventario("La venta no tiene ítems")
+        lineas: list[ItemVenta] = []
+        pedido: dict[int, int] = defaultdict(int)
+        for item in items:
+            variante_id, cantidad = item[0], item[1]
+            pct = Decimal(str(item[2])) if len(item) > 2 else Decimal("0")
+            var = self.obtener_variante(variante_id)
+            prod = self.productos[var.producto_id]
+            if not prod.activo:
+                raise ErrorInventario(f"{prod.nombre} está dado de baja y no se puede vender")
+            if cantidad <= 0:
+                raise ErrorInventario("Las cantidades vendidas deben ser positivas")
+            if pct < 0 or pct > self.DESCUENTO_MAXIMO:
+                raise ErrorInventario(
+                    f"Descuento inválido en {var.sku}: debe estar entre 0 y {self.DESCUENTO_MAXIMO} %"
+                )
+            pedido[variante_id] += cantidad
+            lineas.append(
+                ItemVenta(
+                    variante_id=var.id,
+                    sku=var.sku,
+                    descripcion=f"{prod.nombre} {var.color} T.{var.talla}",
+                    cantidad=cantidad,
+                    precio_unitario=prod.precio_venta,
+                    costo_unitario=prod.costo,
+                    descuento_pct=pct,
+                )
+            )
+        for variante_id, cantidad in pedido.items():
+            disponible = self.stock(variante_id, sucursal_id)
+            if disponible < cantidad:
+                raise StockInsuficiente(
+                    f"No hay suficiente {self.variantes[variante_id].sku} en {suc.codigo}: "
+                    f"hay {disponible}, se quiere vender {cantidad}"
+                )
+        recibido = None
+        if monto_recibido is not None:
+            recibido = Decimal(str(monto_recibido)).quantize(Decimal("0.01"))
+        total = sum((l.subtotal for l in lineas), Decimal("0.00"))
+        if metodo == "efectivo":
+            if recibido is None:
+                raise ErrorInventario("En efectivo indique el monto recibido para calcular el cambio")
+            if recibido < total:
+                raise ErrorInventario(f"Monto recibido insuficiente: total Bs {total}, recibido Bs {recibido}")
+        vid = self._siguiente_id("venta")
+        codigo = f"V-{suc.codigo}-{vid:06d}"
+        for variante_id, cantidad in pedido.items():
+            self._mover(variante_id, sucursal_id, -cantidad, "venta", "Venta en caja", codigo)
+        venta = Venta(
+            id=vid,
+            codigo=codigo,
+            sucursal_id=sucursal_id,
+            fecha=fecha or datetime.now(),
+            items=lineas,
+            metodo_pago=metodo,
+            monto_recibido=recibido if metodo == "efectivo" else None,
+            vendedor=vendedor.strip(),
+        )
+        self.ventas[vid] = venta
+        return venta
+
+    def obtener_venta(self, venta_id: int) -> Venta:
+        try:
+            return self.ventas[venta_id]
+        except KeyError:
+            raise NoEncontrado(f"Venta {venta_id} no existe") from None
+
+    def anular_venta(self, venta_id: int, motivo: str) -> Venta:
+        """Anula una venta (error de caja o devolución): las prendas vuelven al stock."""
+        if not motivo.strip():
+            raise ErrorInventario("Para anular una venta indique el motivo")
+        venta = self.obtener_venta(venta_id)
+        if venta.estado == "anulada":
+            raise Conflicto(f"La venta {venta.codigo} ya está anulada")
+        devuelto: dict[int, int] = defaultdict(int)
+        for item in venta.items:
+            devuelto[item.variante_id] += item.cantidad
+        for variante_id, cantidad in devuelto.items():
+            self._mover(
+                variante_id,
+                venta.sucursal_id,
+                cantidad,
+                "anulacion_venta",
+                f"Anulación: {motivo.strip()}",
+                venta.codigo,
+            )
+        venta.estado = "anulada"
+        venta.motivo_anulacion = motivo.strip()
+        return venta
+
+    def listar_ventas(
+        self,
+        sucursal_id: Optional[int] = None,
+        desde: Optional[datetime] = None,
+        hasta: Optional[datetime] = None,
+        incluir_anuladas: bool = True,
+    ) -> list[Venta]:
+        """Ventas filtradas por sucursal y rango de fechas (``hasta`` es exclusivo)."""
+        return [
+            v
+            for v in self.ventas.values()
+            if (sucursal_id is None or v.sucursal_id == sucursal_id)
+            and (desde is None or v.fecha >= desde)
+            and (hasta is None or v.fecha < hasta)
+            and (incluir_anuladas or v.estado == "completada")
+        ]
 
 
 TALLAS_LETRA_ORDEN = {t: i for i, t in enumerate((*TALLAS_LETRA, "UNICA"))}

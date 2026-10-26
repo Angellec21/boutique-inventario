@@ -6,6 +6,7 @@ para evitar errores de redondeo en precios y totales.
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
@@ -86,7 +87,7 @@ class Movimiento(BaseModel):
     id: int
     variante_id: int
     sucursal_id: int
-    tipo: str  # ingreso | ajuste | transferencia_salida | transferencia_entrada
+    tipo: str  # ingreso | ajuste | transferencia_salida | transferencia_entrada | venta | anulacion_venta
     cantidad: int  # positiva entra, negativa sale
     saldo: int
     motivo: str = ""
@@ -127,3 +128,68 @@ class Transferencia(BaseModel):
     @property
     def unidades_faltantes(self) -> int:
         return sum(i.faltante for i in self.items)
+
+
+METODOS_PAGO = ("efectivo", "qr", "tarjeta")
+
+
+class ItemVenta(BaseModel):
+    variante_id: int
+    sku: str
+    descripcion: str
+    cantidad: int = Field(gt=0)
+    precio_unitario: Decimal
+    costo_unitario: Decimal
+    descuento_pct: Decimal = Decimal("0")
+
+    @property
+    def bruto(self) -> Decimal:
+        return self.precio_unitario * self.cantidad
+
+    @property
+    def descuento(self) -> Decimal:
+        return (self.bruto * self.descuento_pct / 100).quantize(Decimal("0.01"))
+
+    @property
+    def subtotal(self) -> Decimal:
+        return self.bruto - self.descuento
+
+    @property
+    def costo_total(self) -> Decimal:
+        return self.costo_unitario * self.cantidad
+
+
+class Venta(BaseModel):
+    """Venta en caja de una sucursal. Precio y costo se congelan al momento de vender.
+
+    Estados: ``completada`` o ``anulada`` (el stock vuelve a la sucursal).
+    """
+
+    id: int
+    codigo: str
+    sucursal_id: int
+    fecha: datetime
+    items: list[ItemVenta]
+    metodo_pago: str
+    monto_recibido: Optional[Decimal] = None
+    vendedor: str = ""
+    estado: str = "completada"
+    motivo_anulacion: str = ""
+
+    @property
+    def total(self) -> Decimal:
+        return sum((i.subtotal for i in self.items), Decimal("0.00"))
+
+    @property
+    def descuento_total(self) -> Decimal:
+        return sum((i.descuento for i in self.items), Decimal("0.00"))
+
+    @property
+    def cambio(self) -> Decimal:
+        if self.monto_recibido is None:
+            return Decimal("0.00")
+        return self.monto_recibido - self.total
+
+    @property
+    def unidades(self) -> int:
+        return sum(i.cantidad for i in self.items)
