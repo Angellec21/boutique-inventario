@@ -6,11 +6,13 @@ Documentación interactiva: http://localhost:8000/docs
 
 from __future__ import annotations
 
+from datetime import date, datetime, time, timedelta
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from . import reportes
 from .inventario import (
     Conflicto,
     ErrorInventario,
@@ -18,7 +20,7 @@ from .inventario import (
     NoEncontrado,
     StockInsuficiente,
 )
-from .models import Movimiento, Producto, Sucursal, Transferencia, Variante
+from .models import Movimiento, Producto, Sucursal, Transferencia, Variante, Venta
 from .schemas import (
     AjusteIn,
     AnulacionIn,
@@ -29,6 +31,7 @@ from .schemas import (
     SucursalIn,
     TransferenciaIn,
     VarianteIn,
+    VentaIn,
 )
 
 _ESTADOS = {NoEncontrado: 404, Conflicto: 409, StockInsuficiente: 409}
@@ -45,11 +48,37 @@ def _vista_transferencia(i: Inventario, t: Transferencia) -> dict:
     }
 
 
+def _vista_venta(i: Inventario, v: Venta) -> dict:
+    return {
+        **v.model_dump(mode="json"),
+        "sucursal": i.sucursales[v.sucursal_id].codigo,
+        "items": [
+            {**it.model_dump(mode="json", exclude={"costo_unitario"}), "subtotal": str(it.subtotal)}
+            for it in v.items
+        ],
+        "unidades": v.unidades,
+        "descuento_total": str(v.descuento_total),
+        "total": str(v.total),
+        "cambio": str(v.cambio),
+    }
+
+
+def _rango(
+    desde: Optional[date], hasta: Optional[date]
+) -> tuple[Optional[datetime], Optional[datetime]]:
+    """Fechas de la consulta (``hasta`` inclusive) a datetimes con fin exclusivo."""
+    if desde and hasta and hasta < desde:
+        raise HTTPException(422, "La fecha 'hasta' no puede ser anterior a 'desde'")
+    inicio = datetime.combine(desde, time.min) if desde else None
+    fin = datetime.combine(hasta + timedelta(days=1), time.min) if hasta else None
+    return inicio, fin
+
+
 def create_app(inventario: Optional[Inventario] = None) -> FastAPI:
     app = FastAPI(
         title="Boutique Inventario",
         description="Inventario para tiendas de ropa: tallas, colores y sucursales. Montos en Bs.",
-        version="0.1.0",
+        version="0.2.0",
     )
     app.state.inventario = inventario or Inventario()
 
@@ -196,6 +225,73 @@ def create_app(inventario: Optional[Inventario] = None) -> FastAPI:
     @app.post("/transferencias/{transferencia_id}/anulacion", tags=["transferencias"])
     def anular(transferencia_id: int, datos: AnulacionIn, i: Inventario = Depends(inv)):
         return _vista_transferencia(i, i.anular_transferencia(transferencia_id, datos.motivo))
+
+    # -------------------------------------------------------------------- ventas
+    @app.post("/ventas", status_code=201, tags=["ventas"], summary="Registrar venta en caja")
+    def vender(datos: VentaIn, i: Inventario = Depends(inv)):
+        items = [
+            (resolver_variante(it.variante_id, it.sku, i), it.cantidad, it.descuento_pct)
+            for it in datos.items
+        ]
+        venta = i.registrar_venta(
+            datos.sucursal_id, items, datos.metodo_pago, datos.monto_recibido, datos.vendedor
+        )
+        return _vista_venta(i, venta)
+
+    @app.get("/ventas", tags=["ventas"])
+    def listar_ventas(
+        sucursal_id: Optional[int] = None,
+        desde: Optional[date] = None,
+        hasta: Optional[date] = None,
+        i: Inventario = Depends(inv),
+    ):
+        inicio, fin = _rango(desde, hasta)
+        return [_vista_venta(i, v) for v in i.listar_ventas(sucursal_id, inicio, fin)]
+
+    @app.get("/ventas/{venta_id}", tags=["ventas"])
+    def detalle_venta(venta_id: int, i: Inventario = Depends(inv)):
+        return _vista_venta(i, i.obtener_venta(venta_id))
+
+    @app.post("/ventas/{venta_id}/anulacion", tags=["ventas"], summary="Anular y devolver al stock")
+    def anular_venta(venta_id: int, datos: AnulacionIn, i: Inventario = Depends(inv)):
+        return _vista_venta(i, i.anular_venta(venta_id, datos.motivo))
+
+    # ------------------------------------------------------------------ reportes
+    @app.get("/reportes/mas-vendidos", tags=["reportes"])
+    def mas_vendidos(
+        desde: Optional[date] = None,
+        hasta: Optional[date] = None,
+        sucursal_id: Optional[int] = None,
+        por: str = "producto",
+        limite: int = 10,
+        i: Inventario = Depends(inv),
+    ):
+        inicio, fin = _rango(desde, hasta)
+        return reportes.mas_vendidos(i, inicio, fin, sucursal_id, por, limite)
+
+    @app.get("/reportes/ventas-por-talla", tags=["reportes"])
+    def ventas_por_talla(
+        desde: Optional[date] = None,
+        hasta: Optional[date] = None,
+        categoria: Optional[str] = None,
+        i: Inventario = Depends(inv),
+    ):
+        inicio, fin = _rango(desde, hasta)
+        return reportes.ventas_por_talla(i, inicio, fin, categoria)
+
+    @app.get("/reportes/resumen-ventas", tags=["reportes"], summary="Cierre de caja")
+    def resumen_ventas(
+        desde: Optional[date] = None,
+        hasta: Optional[date] = None,
+        sucursal_id: Optional[int] = None,
+        i: Inventario = Depends(inv),
+    ):
+        inicio, fin = _rango(desde, hasta)
+        return reportes.resumen_ventas(i, inicio, fin, sucursal_id)
+
+    @app.get("/reportes/valor-inventario", tags=["reportes"])
+    def valor_inventario(i: Inventario = Depends(inv)):
+        return reportes.valor_inventario(i)
 
     return app
 

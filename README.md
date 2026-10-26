@@ -8,7 +8,7 @@
 
 API de inventario para **tiendas de ropa con varias sucursales**: cada prenda se controla por **talla y color**, con stock separado por tienda, alertas de reposición y kardex de movimientos. Montos en **bolivianos (Bs)**.
 
-> 🚧 **En desarrollo.** Hoy funciona el catálogo, las variantes, el stock por sucursal y las transferencias entre tiendas. Las ventas y reportes llegan en las próximas versiones (ver [Roadmap](#-roadmap)).
+> 🚧 **En desarrollo.** Hoy funciona el catálogo, las variantes, el stock por sucursal, las transferencias entre tiendas, las ventas en caja y los reportes del dueño. Usuarios, persistencia y datos de ejemplo llegan en las próximas versiones (ver [Roadmap](#-roadmap)).
 
 ## 💼 El problema
 
@@ -18,6 +18,7 @@ Una boutique de Santa Cruz con tiendas en el centro y en un mall suele llevar el
 - *«¿Qué tallas se están acabando y hay que pedir al proveedor?»*
 - *«¿Cuánta plata hay en mercadería en cada tienda?»*
 - *«¿Por qué el conteo físico no cuadra con el sistema?»*
+- *«¿Qué modelos y qué tallas se venden más? ¿Cuánto entró hoy por QR y cuánto en efectivo?»*
 
 Boutique Inventario responde esas preguntas con una API que puede usar un sistema de caja, una app móvil o un panel web.
 
@@ -32,6 +33,8 @@ Boutique Inventario responde esas preguntas con una API que puede usar un sistem
 | **Matriz de stock** | Tabla talla × color por producto, en una sucursal o en todas, con valor de la mercadería en Bs |
 | **Alertas de reposición** | Variantes en o por debajo de su stock mínimo, con cuánto falta y cuánto hay en otras sucursales (para transferir antes de comprar) |
 | **Transferencias** | Envío entre sucursales con código `TRF-00001`: el stock sale del origen y queda **en tránsito** hasta que el destino confirma. Recepción con conteo y registro de faltantes, o anulación con devolución al origen |
+| **Ventas en caja** | Venta por SKU con código `V-CEN-000001`, descuento por línea (hasta 50 %), pago en efectivo (con cambio), QR o tarjeta. Todo o nada; precio y costo quedan congelados para calcular el margen real. Anulación con motivo que devuelve las prendas al stock |
+| **Reportes del dueño** | Más vendidos por modelo o SKU con margen, ventas por talla (para decidir la curva de compra), cierre de caja por método de pago y vendedor, valor de la mercadería por sucursal a costo y a precio de venta |
 
 ## 🛠️ Tecnologías
 
@@ -44,15 +47,19 @@ Boutique Inventario responde esas preguntas con una API que puede usar un sistem
 
 ```
 app/
-├── models.py      # Modelos de dominio: Sucursal, Producto, Variante, Movimiento, Transferencia
-├── inventario.py  # Reglas de negocio (servicio): SKU, stock, ajustes, alertas, transferencias
+├── models.py      # Modelos de dominio: Sucursal, Producto, Variante, Movimiento, Transferencia, Venta
+├── inventario.py  # Reglas de negocio (servicio): SKU, stock, ajustes, alertas, transferencias, ventas
+├── reportes.py    # Reportes de solo lectura: más vendidos, tallas, cierre de caja, valor de inventario
 ├── schemas.py     # Esquemas de entrada de la API
 └── main.py        # Rutas FastAPI y mapeo de errores de negocio a HTTP
 tests/
 ├── test_inventario.py          # Pruebas del servicio
 ├── test_transferencias.py      # Ciclo de vida de las transferencias
 ├── test_api.py                 # Pruebas de los endpoints
-└── test_api_transferencias.py  # Endpoints de transferencias
+├── test_api_transferencias.py  # Endpoints de transferencias
+├── test_ventas.py              # Ventas, descuentos, cambio y anulaciones
+├── test_reportes.py            # Reportes del dueño
+└── test_api_ventas.py          # Endpoints de ventas y reportes
 ```
 
 La lógica de negocio vive en `Inventario`, sin depender de FastAPI: se prueba de forma aislada y la persistencia se puede cambiar sin tocar las rutas. Los errores de negocio se traducen a HTTP: `404` (no existe), `409` (duplicado o stock insuficiente) y `422` (dato inválido).
@@ -113,6 +120,31 @@ curl -X POST localhost:8000/transferencias -H 'Content-Type: application/json' \
   -d '{"origen_id":1,"destino_id":2,"nota":"Vitrina fin de semana","items":[{"sku":"BLU-001-NEG-M","cantidad":2}]}'
 curl -X POST localhost:8000/transferencias/1/recepcion -H 'Content-Type: application/json' \
   -d '{"items":[{"sku":"BLU-001-NEG-M","cantidad":1}],"observacion":"Faltó 1 en la bolsa"}'
+
+# 6. Vender 2 blusas con 10 % de descuento, pago en efectivo
+curl -X POST localhost:8000/ventas -H 'Content-Type: application/json' \
+  -d '{"sucursal_id":1,"metodo_pago":"efectivo","monto_recibido":"400","vendedor":"Carla","items":[{"sku":"BLU-001-NEG-M","cantidad":2,"descuento_pct":"10"}]}'
+
+# 7. Cierre de caja del día y lo más vendido del mes
+curl "localhost:8000/reportes/resumen-ventas?desde=2026-10-26&hasta=2026-10-26&sucursal_id=1"
+curl "localhost:8000/reportes/mas-vendidos?desde=2026-10-01&hasta=2026-10-31&por=variante"
+```
+
+Ejemplo de cierre de caja (`GET /reportes/resumen-ventas`):
+
+```json
+{
+  "cantidad_ventas": 2,
+  "ventas_anuladas": 1,
+  "unidades": 5,
+  "total": "997.10",
+  "descuentos": "18.90",
+  "ticket_promedio": "498.55",
+  "margen": "487.10",
+  "margen_pct": "48.9",
+  "por_metodo_pago": { "efectivo": "827.00", "qr": "170.10" },
+  "por_vendedor": { "Carla": "827.00", "Luis": "170.10" }
+}
 ```
 
 Ejemplo de matriz de stock (`GET /productos/1/stock`):
@@ -148,6 +180,14 @@ Ejemplo de matriz de stock (`GET /productos/1/stock`):
 | `GET` | `/transferencias/{id}` | Detalle con unidades enviadas y faltantes |
 | `POST` | `/transferencias/{id}/recepcion` | Confirmar llegada (todo o lo contado) |
 | `POST` | `/transferencias/{id}/anulacion` | Anular el envío; el stock vuelve al origen |
+| `POST` | `/ventas` | Registrar venta (por SKU o id, con descuento y método de pago) |
+| `GET` | `/ventas` | Listar (`?sucursal_id=`, `?desde=`, `?hasta=` en formato AAAA-MM-DD) |
+| `GET` | `/ventas/{id}` | Detalle con subtotales, descuento, total y cambio |
+| `POST` | `/ventas/{id}/anulacion` | Anular la venta; las prendas vuelven al stock |
+| `GET` | `/reportes/mas-vendidos` | Ranking (`?por=producto\|variante`, `?limite=`, fechas, sucursal) |
+| `GET` | `/reportes/ventas-por-talla` | Unidades y % por talla (`?categoria=`) |
+| `GET` | `/reportes/resumen-ventas` | Cierre de caja por método de pago y vendedor |
+| `GET` | `/reportes/valor-inventario` | Mercadería por sucursal a costo y a precio de venta |
 
 ## 🗺️ Roadmap
 
@@ -155,8 +195,8 @@ Ejemplo de matriz de stock (`GET /productos/1/stock`):
 - [x] Stock por sucursal, ajustes y kardex
 - [x] Alertas de stock mínimo
 - [x] Transferencias entre sucursales (envío, recepción con faltantes y anulación)
-- [ ] Ventas con descuento de stock y anulaciones
-- [ ] Reportes: más vendidos, tallas que más rotan, valor de inventario por sucursal
+- [x] Ventas con descuento de stock, descuentos por línea y anulaciones
+- [x] Reportes: más vendidos, ventas por talla, cierre de caja, valor de inventario por sucursal
 - [ ] Usuarios y roles (encargado de tienda / administrador)
 - [ ] Persistencia en SQLite y datos de ejemplo de Santa Cruz
 

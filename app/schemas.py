@@ -82,3 +82,18 @@ class RecepcionIn(BaseModel):
 
 class AnulacionIn(BaseModel):
     motivo: str = Field(min_length=3, examples=["El envío no salió de la tienda"])
+
+
+class ItemVentaIn(BaseModel):
+    variante_id: Optional[int] = None
+    sku: Optional[str] = Field(default=None, examples=["BLU-001-BEI-M"])
+    cantidad: int = Field(gt=0, examples=[1])
+    descuento_pct: Decimal = Field(default=Decimal("0"), ge=0, le=50, examples=["10"])
+
+
+class VentaIn(BaseModel):
+    sucursal_id: int
+    metodo_pago: str = Field(default="efectivo", examples=["efectivo"])
+    monto_recibido: Optional[Decimal] = Field(default=None, ge=0, examples=["200.00"])
+    vendedor: str = Field(default="", examples=["Carla"])
+    items: list[ItemVentaIn] = Field(min_length=1)
