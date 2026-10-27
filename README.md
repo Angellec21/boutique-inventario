@@ -8,7 +8,7 @@
 
 API de inventario para **tiendas de ropa con varias sucursales**: cada prenda se controla por **talla y color**, con stock separado por tienda, alertas de reposición y kardex de movimientos. Montos en **bolivianos (Bs)**.
 
-> 🚧 **En desarrollo.** Hoy funciona el catálogo, las variantes, el stock por sucursal, las transferencias entre tiendas, las ventas en caja y los reportes del dueño. Usuarios, persistencia y datos de ejemplo llegan en las próximas versiones (ver [Roadmap](#-roadmap)).
+> 🚧 **En desarrollo.** Hoy funciona el catálogo, las variantes, el stock por sucursal, las transferencias entre tiendas, las ventas en caja, los reportes del dueño y el acceso con usuarios y roles. La persistencia y los datos de ejemplo llegan en la próxima versión (ver [Roadmap](#-roadmap)).
 
 ## 💼 El problema
 
@@ -34,12 +34,14 @@ Boutique Inventario responde esas preguntas con una API que puede usar un sistem
 | **Alertas de reposición** | Variantes en o por debajo de su stock mínimo, con cuánto falta y cuánto hay en otras sucursales (para transferir antes de comprar) |
 | **Transferencias** | Envío entre sucursales con código `TRF-00001`: el stock sale del origen y queda **en tránsito** hasta que el destino confirma. Recepción con conteo y registro de faltantes, o anulación con devolución al origen |
 | **Ventas en caja** | Venta por SKU con código `V-CEN-000001`, descuento por línea (hasta 50 %), pago en efectivo (con cambio), QR o tarjeta. Todo o nada; precio y costo quedan congelados para calcular el margen real. Anulación con motivo que devuelve las prendas al stock |
+| **Usuarios y roles** | Inicio de sesión con token JWT. El **administrador** (dueño) ve todo; el **encargado** opera solo su tienda y no ve costos, márgenes ni reportes. Contraseñas cifradas con PBKDF2 |
 | **Reportes del dueño** | Más vendidos por modelo o SKU con margen, ventas por talla (para decidir la curva de compra), cierre de caja por método de pago y vendedor, valor de la mercadería por sucursal a costo y a precio de venta |
 
 ## 🛠️ Tecnologías
 
 - **Python 3.11+** y **FastAPI** (documentación OpenAPI automática en `/docs`)
 - **Pydantic v2** para validación; montos con `Decimal`
+- **PyJWT** para tokens de acceso; contraseñas con PBKDF2-SHA256 (`hashlib`)
 - **pytest** + `TestClient` para pruebas de servicio y de API
 - **GitHub Actions**: pruebas en Python 3.11, 3.12 y 3.13 en cada push y pull request
 
@@ -50,8 +52,9 @@ app/
 ├── models.py      # Modelos de dominio: Sucursal, Producto, Variante, Movimiento, Transferencia, Venta
 ├── inventario.py  # Reglas de negocio (servicio): SKU, stock, ajustes, alertas, transferencias, ventas
 ├── reportes.py    # Reportes de solo lectura: más vendidos, tallas, cierre de caja, valor de inventario
+├── usuarios.py    # Usuarios, contraseñas cifradas y tokens JWT
 ├── schemas.py     # Esquemas de entrada de la API
-└── main.py        # Rutas FastAPI y mapeo de errores de negocio a HTTP
+└── main.py        # Rutas FastAPI, permisos por rol y mapeo de errores a HTTP
 tests/
 ├── test_inventario.py          # Pruebas del servicio
 ├── test_transferencias.py      # Ciclo de vida de las transferencias
@@ -59,10 +62,27 @@ tests/
 ├── test_api_transferencias.py  # Endpoints de transferencias
 ├── test_ventas.py              # Ventas, descuentos, cambio y anulaciones
 ├── test_reportes.py            # Reportes del dueño
-└── test_api_ventas.py          # Endpoints de ventas y reportes
+├── test_api_ventas.py          # Endpoints de ventas y reportes
+├── test_usuarios.py            # Contraseñas, tokens y gestión de usuarios
+└── test_api_auth.py            # Inicio de sesión y permisos por rol
 ```
 
-La lógica de negocio vive en `Inventario`, sin depender de FastAPI: se prueba de forma aislada y la persistencia se puede cambiar sin tocar las rutas. Los errores de negocio se traducen a HTTP: `404` (no existe), `409` (duplicado o stock insuficiente) y `422` (dato inválido).
+La lógica de negocio vive en `Inventario`, sin depender de FastAPI: se prueba de forma aislada y la persistencia se puede cambiar sin tocar las rutas. Los errores de negocio se traducen a HTTP: `401` (sin sesión o token vencido), `403` (el rol no lo permite), `404` (no existe), `409` (duplicado o stock insuficiente) y `422` (dato inválido).
+
+### Roles y permisos
+
+| Acción | Administrador | Encargado de tienda |
+|---|:---:|:---:|
+| Sucursales, productos y variantes (crear) | ✅ | — |
+| Consultar catálogo, SKU y matriz de stock de todas las tiendas | ✅ | ✅ (sin costo ni margen) |
+| Ventas, ingresos, ajustes por conteo y alertas | ✅ | ✅ solo su sucursal |
+| Enviar / recibir / anular transferencias | ✅ | ✅ si su tienda es origen / destino / origen |
+| Ver ventas, transferencias y kardex | ✅ todo | ✅ solo su sucursal |
+| Anular ventas | ✅ | — |
+| Reportes (más vendidos, tallas, cierre de caja, valor de inventario) | ✅ | — |
+| Usuarios (alta, baja, restablecer contraseña) | ✅ | — |
+
+Los permisos se verifican en cada petición con el usuario guardado (no con lo que dice el token), así que una baja o un cambio de rol rige al instante. Una prueba automática recorre todas las rutas y verifica que ninguna privada responda sin sesión.
 
 ### Ciclo de una transferencia
 
@@ -83,10 +103,19 @@ git clone https://github.com/Angellec21/boutique-inventario.git
 cd boutique-inventario
 python -m venv .venv && source .venv/bin/activate   # En Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
+
+export BOUTIQUE_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export BOUTIQUE_ADMIN_CLAVE="UnaClaveSegura2026"   # usuario: admin
 uvicorn app.main:app --reload
 ```
 
-Abrir la documentación interactiva en <http://localhost:8000/docs>.
+Abrir la documentación interactiva en <http://localhost:8000/docs>, ingresar con `POST /auth/token` y pegar el token en el botón **Authorize**.
+
+| Variable | Para qué |
+|---|---|
+| `BOUTIQUE_SECRET` | Firma de los tokens (mínimo 32 caracteres). Si falta se genera una al arrancar y las sesiones se pierden al reiniciar |
+| `BOUTIQUE_ADMIN_USUARIO` | Usuario del primer administrador (por defecto `admin`) |
+| `BOUTIQUE_ADMIN_CLAVE` | Su contraseña. Si falta se genera una aleatoria y se muestra una vez en la consola |
 
 ### Pruebas
 
@@ -97,6 +126,11 @@ python -m pytest
 ## 📖 Uso rápido
 
 ```bash
+# 0. Iniciar sesión (todas las rutas, salvo /salud, piden el token)
+TOKEN=$(curl -s -X POST localhost:8000/auth/token -H 'Content-Type: application/json' \
+  -d '{"usuario":"admin","clave":"UnaClaveSegura2026"}' | python -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
+alias curl="curl -H 'Authorization: Bearer $TOKEN'"
+
 # 1. Sucursal y producto
 curl -X POST localhost:8000/sucursales -H 'Content-Type: application/json' \
   -d '{"codigo":"CEN","nombre":"Centro","direccion":"Calle 24 de Septiembre #155"}'
@@ -128,6 +162,10 @@ curl -X POST localhost:8000/ventas -H 'Content-Type: application/json' \
 # 7. Cierre de caja del día y lo más vendido del mes
 curl "localhost:8000/reportes/resumen-ventas?desde=2026-10-26&hasta=2026-10-26&sucursal_id=1"
 curl "localhost:8000/reportes/mas-vendidos?desde=2026-10-01&hasta=2026-10-31&por=variante"
+
+# 8. Crear la cuenta de la encargada de la tienda 1
+curl -X POST localhost:8000/usuarios -H 'Content-Type: application/json' \
+  -d '{"usuario":"carla.v","nombre":"Carla Vaca","clave":"Centro2026","rol":"encargado","sucursal_id":1}'
 ```
 
 Ejemplo de cierre de caja (`GET /reportes/resumen-ventas`):
@@ -164,6 +202,12 @@ Ejemplo de matriz de stock (`GET /productos/1/stock`):
 
 | Método | Ruta | Descripción |
 |---|---|---|
+| `POST` | `/auth/token` | Iniciar sesión (usuario y contraseña → token) |
+| `GET` | `/auth/yo` | Datos del usuario de la sesión |
+| `POST` | `/auth/clave` | Cambiar mi contraseña |
+| `POST` / `GET` | `/usuarios` | Crear y listar usuarios (admin) |
+| `POST` | `/usuarios/{id}/baja` | Desactivar un usuario (admin) |
+| `POST` | `/usuarios/{id}/clave` | Restablecer contraseña (admin) |
 | `POST` / `GET` | `/sucursales` | Crear y listar sucursales |
 | `POST` / `GET` | `/productos` | Crear y buscar productos (`?q=`, `?categoria=`) |
 | `GET` | `/productos/{id}` | Detalle con margen y variantes con stock total |
@@ -197,7 +241,7 @@ Ejemplo de matriz de stock (`GET /productos/1/stock`):
 - [x] Transferencias entre sucursales (envío, recepción con faltantes y anulación)
 - [x] Ventas con descuento de stock, descuentos por línea y anulaciones
 - [x] Reportes: más vendidos, ventas por talla, cierre de caja, valor de inventario por sucursal
-- [ ] Usuarios y roles (encargado de tienda / administrador)
+- [x] Usuarios y roles (encargado de tienda / administrador) con JWT
 - [ ] Persistencia en SQLite y datos de ejemplo de Santa Cruz
 
 ## 📄 Licencia
