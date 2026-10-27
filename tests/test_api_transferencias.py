@@ -1,12 +1,12 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import create_app
+from tests.ayudas import cliente_admin
 
 
 @pytest.fixture
 def client() -> TestClient:
-    c = TestClient(create_app())
+    c = cliente_admin()
     c.post("/sucursales", json={"codigo": "CEN", "nombre": "Centro"})
     c.post("/sucursales", json={"codigo": "VEN", "nombre": "Ventura Mall"})
     c.post(

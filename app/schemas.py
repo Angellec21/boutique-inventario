@@ -97,3 +97,25 @@ class VentaIn(BaseModel):
     monto_recibido: Optional[Decimal] = Field(default=None, ge=0, examples=["200.00"])
     vendedor: str = Field(default="", examples=["Carla"])
     items: list[ItemVentaIn] = Field(min_length=1)
+
+
+class LoginIn(BaseModel):
+    usuario: str = Field(min_length=1, examples=["admin"])
+    clave: str = Field(min_length=1, examples=["Boutique2026"])
+
+
+class UsuarioIn(BaseModel):
+    usuario: str = Field(examples=["carla.v"])
+    nombre: str = Field(min_length=2, examples=["Carla Vaca"])
+    clave: str = Field(min_length=8, examples=["Equipetrol2026"])
+    rol: str = Field(default="encargado", examples=["encargado"])
+    sucursal_id: Optional[int] = Field(default=None, examples=[2])
+
+
+class CambioClaveIn(BaseModel):
+    actual: str
+    nueva: str = Field(min_length=8)
+
+
+class RestablecerClaveIn(BaseModel):
+    nueva: str = Field(min_length=8)

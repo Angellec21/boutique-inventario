@@ -50,14 +50,16 @@ class Usuario(BaseModel):
         return self.model_dump(exclude={"clave_hash"})
 
 
-def cifrar_clave(clave: str, sal: Optional[bytes] = None) -> str:
+def cifrar_clave(
+    clave: str, sal: Optional[bytes] = None, iteraciones: int = ITERACIONES
+) -> str:
     """Devuelve ``pbkdf2_sha256$iteraciones$sal$hash`` (sal y hash en base64)."""
     sal = sal or secrets.token_bytes(16)
-    derivada = hashlib.pbkdf2_hmac("sha256", clave.encode(), sal, ITERACIONES)
+    derivada = hashlib.pbkdf2_hmac("sha256", clave.encode(), sal, iteraciones)
     return "$".join(
         (
             "pbkdf2_sha256",
-            str(ITERACIONES),
+            str(iteraciones),
             base64.b64encode(sal).decode(),
             base64.b64encode(derivada).decode(),
         )
@@ -87,12 +89,18 @@ def validar_clave(clave: str) -> None:
 class RegistroUsuarios:
     """Usuarios del sistema y emisión/validación de tokens."""
 
-    def __init__(self, secreto: Optional[str] = None, minutos_token: int = MINUTOS_TOKEN):
+    def __init__(
+        self,
+        secreto: Optional[str] = None,
+        minutos_token: int = MINUTOS_TOKEN,
+        iteraciones: int = ITERACIONES,
+    ):
         self.usuarios: dict[int, Usuario] = {}
         self._secreto = secreto or os.environ.get("BOUTIQUE_SECRET") or secrets.token_urlsafe(32)
         if len(self._secreto) < 32:
             raise ValueError("El secreto para firmar tokens debe tener al menos 32 caracteres")
         self.minutos_token = minutos_token
+        self.iteraciones = iteraciones  # menos solo en pruebas, para que corran rápido
         self._ultimo_id = 0
 
     # --------------------------------------------------------------- gestión
@@ -126,7 +134,7 @@ class RegistroUsuarios:
             nombre=nombre.strip(),
             rol=rol,
             sucursal_id=sucursal_id if rol == "encargado" else None,
-            clave_hash=cifrar_clave(clave),
+            clave_hash=cifrar_clave(clave, iteraciones=self.iteraciones),
         )
         self.usuarios[nuevo.id] = nuevo
         return nuevo
@@ -157,18 +165,18 @@ class RegistroUsuarios:
         if not verificar_clave(actual, u.clave_hash):
             raise CredencialesInvalidas("La contraseña actual no es correcta")
         validar_clave(nueva)
-        u.clave_hash = cifrar_clave(nueva)
+        u.clave_hash = cifrar_clave(nueva, iteraciones=self.iteraciones)
 
     def restablecer_clave(self, usuario_id: int, nueva: str) -> None:
         """El administrador asigna una contraseña nueva (p. ej. si la olvidaron)."""
         validar_clave(nueva)
-        self.obtener(usuario_id).clave_hash = cifrar_clave(nueva)
+        self.obtener(usuario_id).clave_hash = cifrar_clave(nueva, iteraciones=self.iteraciones)
 
     # ---------------------------------------------------------------- acceso
     def autenticar(self, usuario: str, clave: str) -> Usuario:
         u = self.por_nombre(usuario)
         # Se verifica igual una clave ficticia para no revelar qué usuarios existen.
-        guardado = u.clave_hash if u else cifrar_clave("x", b"0" * 16)
+        guardado = u.clave_hash if u else cifrar_clave("x", b"0" * 16, self.iteraciones)
         if not verificar_clave(clave, guardado) or u is None or not u.activo:
             raise CredencialesInvalidas("Usuario o contraseña incorrectos")
         return u
