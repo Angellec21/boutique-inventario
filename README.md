@@ -53,6 +53,7 @@ app/
 ├── inventario.py  # Reglas de negocio (servicio): SKU, stock, ajustes, alertas, transferencias, ventas
 ├── reportes.py    # Reportes de solo lectura: más vendidos, tallas, cierre de caja, valor de inventario
 ├── usuarios.py    # Usuarios, contraseñas cifradas y tokens JWT
+├── persistencia.py # Guardado y carga del estado en un archivo JSON (escritura atómica)
 ├── schemas.py     # Esquemas de entrada de la API
 └── main.py        # Rutas FastAPI, permisos por rol y mapeo de errores a HTTP
 tests/
@@ -64,7 +65,9 @@ tests/
 ├── test_reportes.py            # Reportes del dueño
 ├── test_api_ventas.py          # Endpoints de ventas y reportes
 ├── test_usuarios.py            # Contraseñas, tokens y gestión de usuarios
-└── test_api_auth.py            # Inicio de sesión y permisos por rol
+├── test_api_auth.py            # Inicio de sesión y permisos por rol
+├── test_persistencia.py        # Exportar/importar, archivo dañado, guardado atómico
+└── test_api_persistencia.py    # Los cambios sobreviven a un reinicio del servidor
 ```
 
 La lógica de negocio vive en `Inventario`, sin depender de FastAPI: se prueba de forma aislada y la persistencia se puede cambiar sin tocar las rutas. Los errores de negocio se traducen a HTTP: `401` (sin sesión o token vencido), `403` (el rol no lo permite), `404` (no existe), `409` (duplicado o stock insuficiente) y `422` (dato inválido).
@@ -116,6 +119,9 @@ Abrir la documentación interactiva en <http://localhost:8000/docs>, ingresar co
 | `BOUTIQUE_SECRET` | Firma de los tokens (mínimo 32 caracteres). Si falta se genera una al arrancar y las sesiones se pierden al reiniciar |
 | `BOUTIQUE_ADMIN_USUARIO` | Usuario del primer administrador (por defecto `admin`) |
 | `BOUTIQUE_ADMIN_CLAVE` | Su contraseña. Si falta se genera una aleatoria y se muestra una vez en la consola |
+| `BOUTIQUE_DATOS` | Archivo donde se guarda todo (por defecto `data/boutique.json`) |
+
+Los datos se guardan en un archivo JSON después de cada operación que los modifica y se cargan al arrancar. La escritura es atómica (archivo temporal + reemplazo), así que un corte de luz no deja el archivo a medias. Para respaldar basta con copiar ese archivo; contiene las contraseñas solo cifradas y nunca el secreto de los tokens.
 
 ### Pruebas
 
@@ -242,7 +248,9 @@ Ejemplo de matriz de stock (`GET /productos/1/stock`):
 - [x] Ventas con descuento de stock, descuentos por línea y anulaciones
 - [x] Reportes: más vendidos, ventas por talla, cierre de caja, valor de inventario por sucursal
 - [x] Usuarios y roles (encargado de tienda / administrador) con JWT
-- [ ] Persistencia en SQLite y datos de ejemplo de Santa Cruz
+- [x] Persistencia en archivo JSON con guardado atómico
+- [ ] Datos de ejemplo de una boutique de Santa Cruz
+- [ ] Base de datos SQLite/PostgreSQL para varias cajas a la vez
 
 ## 📄 Licencia
 

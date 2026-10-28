@@ -24,6 +24,7 @@ from .inventario import (
     NoEncontrado,
     StockInsuficiente,
 )
+from .persistencia import Almacen
 from .models import Movimiento, Producto, Sucursal, Transferencia, Variante, Venta
 from .schemas import (
     AjusteIn,
@@ -106,9 +107,21 @@ def _sin_costos(datos: dict) -> dict:
     return {k: v for k, v in datos.items() if k not in ("costo", "margen")}
 
 
+_METODOS_QUE_MODIFICAN = {"POST", "PUT", "PATCH", "DELETE"}
+_RUTAS_SIN_CAMBIOS = {"/auth/token"}
+
+
 def create_app(
-    inventario: Optional[Inventario] = None, usuarios: Optional[RegistroUsuarios] = None
+    inventario: Optional[Inventario] = None,
+    usuarios: Optional[RegistroUsuarios] = None,
+    datos: Optional[str | os.PathLike] = None,
 ) -> FastAPI:
+    """Crea la aplicación.
+
+    Con ``datos`` (ruta a un archivo JSON) el estado se carga al iniciar y se
+    guarda después de cada operación que lo modifica. Sin ``datos`` todo queda
+    en memoria (útil para pruebas y demostraciones).
+    """
     app = FastAPI(
         title="Boutique Inventario",
         description=(
@@ -120,8 +133,27 @@ def create_app(
     app.state.inventario = inventario or Inventario()
     if usuarios is None:
         usuarios = RegistroUsuarios()
-        _admin_inicial(usuarios)
     app.state.usuarios = usuarios
+    app.state.almacen = Almacen(datos) if datos else None
+    if app.state.almacen and app.state.almacen.cargar(app.state.inventario, usuarios):
+        log.info("Datos cargados desde %s", app.state.almacen.ruta)
+    if not usuarios.usuarios:
+        _admin_inicial(usuarios)
+        if app.state.almacen:
+            app.state.almacen.guardar(app.state.inventario, usuarios)
+
+    @app.middleware("http")
+    async def _guardar_cambios(request: Request, llamar_siguiente):
+        respuesta = await llamar_siguiente(request)
+        almacen = request.app.state.almacen
+        if (
+            almacen is not None
+            and request.method in _METODOS_QUE_MODIFICAN
+            and request.url.path not in _RUTAS_SIN_CAMBIOS
+            and respuesta.status_code < 400
+        ):
+            almacen.guardar(request.app.state.inventario, request.app.state.usuarios)
+        return respuesta
 
     @app.exception_handler(ErrorInventario)
     async def _errores_de_negocio(_: Request, exc: ErrorInventario):
@@ -490,4 +522,4 @@ def create_app(
     return app
 
 
-app = create_app()
+app = create_app(datos=os.environ.get("BOUTIQUE_DATOS", "data/boutique.json"))
