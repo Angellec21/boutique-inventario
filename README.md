@@ -49,13 +49,14 @@ Boutique Inventario responde esas preguntas con una API que puede usar un sistem
 
 ```
 app/
-├── models.py      # Modelos de dominio: Sucursal, Producto, Variante, Movimiento, Transferencia, Venta
-├── inventario.py  # Reglas de negocio (servicio): SKU, stock, ajustes, alertas, transferencias, ventas
-├── reportes.py    # Reportes de solo lectura: más vendidos, tallas, cierre de caja, valor de inventario
-├── usuarios.py    # Usuarios, contraseñas cifradas y tokens JWT
-├── persistencia.py # Guardado y carga del estado en un archivo JSON (escritura atómica)
-├── schemas.py     # Esquemas de entrada de la API
-└── main.py        # Rutas FastAPI, permisos por rol y mapeo de errores a HTTP
+├── models.py        # Modelos de dominio: Sucursal, Producto, Variante, Movimiento, Transferencia, Venta
+├── inventario.py    # Reglas de negocio (servicio): SKU, stock, ajustes, alertas, transferencias, ventas
+├── reportes.py      # Reportes de solo lectura: más vendidos, tallas, cierre de caja, valor de inventario
+├── usuarios.py      # Usuarios, contraseñas cifradas y tokens JWT
+├── persistencia.py  # Guardado y carga del estado en un archivo JSON (escritura atómica)
+├── datos_ejemplo.py # Boutique de Santa Cruz de ejemplo (python -m app.datos_ejemplo)
+├── schemas.py       # Esquemas de entrada de la API
+└── main.py          # Rutas FastAPI, permisos por rol y mapeo de errores a HTTP
 tests/
 ├── test_inventario.py          # Pruebas del servicio
 ├── test_transferencias.py      # Ciclo de vida de las transferencias
@@ -67,7 +68,8 @@ tests/
 ├── test_usuarios.py            # Contraseñas, tokens y gestión de usuarios
 ├── test_api_auth.py            # Inicio de sesión y permisos por rol
 ├── test_persistencia.py        # Exportar/importar, archivo dañado, guardado atómico
-└── test_api_persistencia.py    # Los cambios sobreviven a un reinicio del servidor
+├── test_api_persistencia.py    # Los cambios sobreviven a un reinicio del servidor
+└── test_datos_ejemplo.py       # Datos de ejemplo coherentes y reproducibles
 ```
 
 La lógica de negocio vive en `Inventario`, sin depender de FastAPI: se prueba de forma aislada y la persistencia se puede cambiar sin tocar las rutas. Los errores de negocio se traducen a HTTP: `401` (sin sesión o token vencido), `403` (el rol no lo permite), `404` (no existe), `409` (duplicado o stock insuficiente) y `422` (dato inválido).
@@ -122,6 +124,24 @@ Abrir la documentación interactiva en <http://localhost:8000/docs>, ingresar co
 | `BOUTIQUE_DATOS` | Archivo donde se guarda todo (por defecto `data/boutique.json`) |
 
 Los datos se guardan en un archivo JSON después de cada operación que los modifica y se cargan al arrancar. La escritura es atómica (archivo temporal + reemplazo), así que un corte de luz no deja el archivo a medias. Para respaldar basta con copiar ese archivo; contiene las contraseñas solo cifradas y nunca el secreto de los tokens.
+
+### Datos de ejemplo
+
+Para probar el sistema sin cargar todo a mano hay una boutique cruceña de ejemplo: tres tiendas (Centro, Equipetrol y Ventura Mall), 8 modelos con 54 variantes, stock inicial, una transferencia con faltante, dos semanas de ventas (efectivo, QR y tarjeta, con descuentos y una anulación) y usuarios de demostración.
+
+```bash
+python -m app.datos_ejemplo            # escribe data/boutique.json (o BOUTIQUE_DATOS)
+python -m app.datos_ejemplo --forzar   # reemplaza un archivo existente
+uvicorn app.main:app --reload
+```
+
+| Usuario | Contraseña | Rol |
+|---|---|---|
+| `rosa` | `Boutique2026` | Administradora (dueña) |
+| `carla.v` | `Equipetrol26` | Encargada de Equipetrol |
+| `luis.r` | `Ventura2026` | Encargado de Ventura Mall |
+
+> Son contraseñas de demostración: cámbielas (`POST /auth/clave`) antes de usar el sistema con datos reales.
 
 ### Pruebas
 
@@ -249,7 +269,7 @@ Ejemplo de matriz de stock (`GET /productos/1/stock`):
 - [x] Reportes: más vendidos, ventas por talla, cierre de caja, valor de inventario por sucursal
 - [x] Usuarios y roles (encargado de tienda / administrador) con JWT
 - [x] Persistencia en archivo JSON con guardado atómico
-- [ ] Datos de ejemplo de una boutique de Santa Cruz
+- [x] Datos de ejemplo de una boutique de Santa Cruz
 - [ ] Base de datos SQLite/PostgreSQL para varias cajas a la vez
 
 ## 📄 Licencia
