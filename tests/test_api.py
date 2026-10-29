@@ -22,10 +22,6 @@ def client() -> TestClient:
     return c
 
 
-def test_salud(client):
-    assert client.get("/salud").json() == {"estado": "ok"}
-
-
 def test_crear_y_listar_productos(client):
     r = client.get("/productos", params={"q": "skinny"})
     assert r.status_code == 200

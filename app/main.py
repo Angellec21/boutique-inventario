@@ -6,6 +6,7 @@ Documentación interactiva: http://localhost:8000/docs
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import secrets
@@ -13,10 +14,10 @@ from datetime import date, datetime, time, timedelta
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from . import reportes
+from . import __version__, reportes
 from .inventario import (
     Conflicto,
     ErrorInventario,
@@ -24,7 +25,7 @@ from .inventario import (
     NoEncontrado,
     StockInsuficiente,
 )
-from .persistencia import Almacen
+from .persistencia import Almacen, exportar
 from .models import Movimiento, Producto, Sucursal, Transferencia, Variante, Venta
 from .schemas import (
     AjusteIn,
@@ -128,7 +129,7 @@ def create_app(
             "Inventario para tiendas de ropa: tallas, colores y sucursales. Montos en Bs. "
             "Ingrese con POST /auth/token y use el botón Authorize con el token."
         ),
-        version="0.3.0",
+        version=__version__,
     )
     app.state.inventario = inventario or Inventario()
     if usuarios is None:
@@ -200,8 +201,13 @@ def create_app(
         return sucursal_id
 
     @app.get("/salud", tags=["sistema"])
-    def salud():
-        return {"estado": "ok"}
+    def salud(request: Request):
+        almacen = request.app.state.almacen
+        return {
+            "estado": "ok",
+            "version": __version__,
+            "guardado": "archivo" if almacen is not None else "memoria",
+        }
 
     # ------------------------------------------------------------------ acceso
     @app.post("/auth/token", tags=["acceso"], summary="Iniciar sesión")
@@ -518,6 +524,36 @@ def create_app(
     @app.get("/reportes/valor-inventario", tags=["reportes"])
     def valor_inventario(_: Usuario = Depends(solo_admin), i: Inventario = Depends(inv)):
         return reportes.valor_inventario(i)
+
+    # ----------------------------------------------------------------- respaldo
+    @app.get(
+        "/respaldo",
+        tags=["sistema"],
+        summary="Descargar respaldo completo (admin)",
+        response_class=Response,
+        responses={200: {"content": {"application/json": {}}}},
+    )
+    def respaldo(
+        _: Usuario = Depends(solo_admin),
+        i: Inventario = Depends(inv),
+        r: RegistroUsuarios = Depends(registro),
+    ):
+        """Copia de todo el estado en el mismo formato que el archivo de datos.
+
+        Para restaurarla basta con copiar el archivo descargado en la ruta de
+        ``BOUTIQUE_DATOS`` y reiniciar el servidor. Incluye las contraseñas solo
+        cifradas y nunca el secreto de los tokens.
+        """
+        nombre = f"boutique-respaldo-{datetime.now():%Y%m%d-%H%M}.json"
+        contenido = json.dumps(exportar(i, r), ensure_ascii=False, indent=1)
+        return Response(
+            content=contenido.encode("utf-8"),
+            media_type="application/json",
+            headers={
+                "Content-Disposition": f'attachment; filename="{nombre}"',
+                "Cache-Control": "no-store",
+            },
+        )
 
     return app
 
