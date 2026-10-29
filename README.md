@@ -5,10 +5,11 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
 ![pytest](https://img.shields.io/badge/tests-pytest-0A9EDC?logo=pytest&logoColor=white)
 [![Licencia: MIT](https://img.shields.io/badge/licencia-MIT-green.svg)](LICENSE)
+![Versión](https://img.shields.io/badge/versión-1.0.0-blue)
 
 API de inventario para **tiendas de ropa con varias sucursales**: cada prenda se controla por **talla y color**, con stock separado por tienda, alertas de reposición y kardex de movimientos. Montos en **bolivianos (Bs)**.
 
-> 🚧 **En desarrollo.** Hoy funciona el catálogo, las variantes, el stock por sucursal, las transferencias entre tiendas, las ventas en caja, los reportes del dueño y el acceso con usuarios y roles. La persistencia y los datos de ejemplo llegan en la próxima versión (ver [Roadmap](#-roadmap)).
+> ✅ **Versión 1.0.0** — catálogo, stock por sucursal, transferencias, ventas en caja, reportes del dueño, usuarios con roles, guardado en archivo con respaldo descargable y datos de ejemplo listos para probar. 139 pruebas automáticas. Ver el [registro de cambios](CHANGELOG.md).
 
 ## 💼 El problema
 
@@ -35,6 +36,7 @@ Boutique Inventario responde esas preguntas con una API que puede usar un sistem
 | **Transferencias** | Envío entre sucursales con código `TRF-00001`: el stock sale del origen y queda **en tránsito** hasta que el destino confirma. Recepción con conteo y registro de faltantes, o anulación con devolución al origen |
 | **Ventas en caja** | Venta por SKU con código `V-CEN-000001`, descuento por línea (hasta 50 %), pago en efectivo (con cambio), QR o tarjeta. Todo o nada; precio y costo quedan congelados para calcular el margen real. Anulación con motivo que devuelve las prendas al stock |
 | **Usuarios y roles** | Inicio de sesión con token JWT. El **administrador** (dueño) ve todo; el **encargado** opera solo su tienda y no ve costos, márgenes ni reportes. Contraseñas cifradas con PBKDF2 |
+| **Respaldo** | El dueño descarga una copia completa del sistema en un clic (`GET /respaldo`); se restaura copiando el archivo y reiniciando |
 | **Reportes del dueño** | Más vendidos por modelo o SKU con margen, ventas por talla (para decidir la curva de compra), cierre de caja por método de pago y vendedor, valor de la mercadería por sucursal a costo y a precio de venta |
 
 ## 🛠️ Tecnologías
@@ -69,6 +71,7 @@ tests/
 ├── test_api_auth.py            # Inicio de sesión y permisos por rol
 ├── test_persistencia.py        # Exportar/importar, archivo dañado, guardado atómico
 ├── test_api_persistencia.py    # Los cambios sobreviven a un reinicio del servidor
+├── test_api_respaldo.py        # Estado del sistema, descarga y restauración del respaldo
 └── test_datos_ejemplo.py       # Datos de ejemplo coherentes y reproducibles
 ```
 
@@ -123,7 +126,9 @@ Abrir la documentación interactiva en <http://localhost:8000/docs>, ingresar co
 | `BOUTIQUE_ADMIN_CLAVE` | Su contraseña. Si falta se genera una aleatoria y se muestra una vez en la consola |
 | `BOUTIQUE_DATOS` | Archivo donde se guarda todo (por defecto `data/boutique.json`) |
 
-Los datos se guardan en un archivo JSON después de cada operación que los modifica y se cargan al arrancar. La escritura es atómica (archivo temporal + reemplazo), así que un corte de luz no deja el archivo a medias. Para respaldar basta con copiar ese archivo; contiene las contraseñas solo cifradas y nunca el secreto de los tokens.
+Los datos se guardan en un archivo JSON después de cada operación que los modifica y se cargan al arrancar. La escritura es atómica (archivo temporal + reemplazo), así que un corte de luz no deja el archivo a medias.
+
+**Respaldo:** el administrador puede descargar una copia completa desde `GET /respaldo` (o desde `/docs`) sin entrar al servidor. Para restaurarla, se copia el archivo descargado en la ruta de `BOUTIQUE_DATOS` y se reinicia. El respaldo contiene las contraseñas solo cifradas y nunca el secreto de los tokens; aun así conviene guardarlo en un lugar seguro.
 
 ### Datos de ejemplo
 
@@ -258,6 +263,8 @@ Ejemplo de matriz de stock (`GET /productos/1/stock`):
 | `GET` | `/reportes/ventas-por-talla` | Unidades y % por talla (`?categoria=`) |
 | `GET` | `/reportes/resumen-ventas` | Cierre de caja por método de pago y vendedor |
 | `GET` | `/reportes/valor-inventario` | Mercadería por sucursal a costo y a precio de venta |
+| `GET` | `/respaldo` | Descargar respaldo completo en JSON (admin) |
+| `GET` | `/salud` | Estado, versión y modo de guardado (sin sesión) |
 
 ## 🗺️ Roadmap
 
@@ -270,7 +277,11 @@ Ejemplo de matriz de stock (`GET /productos/1/stock`):
 - [x] Usuarios y roles (encargado de tienda / administrador) con JWT
 - [x] Persistencia en archivo JSON con guardado atómico
 - [x] Datos de ejemplo de una boutique de Santa Cruz
+- [x] Respaldo descargable por el administrador
 - [ ] Base de datos SQLite/PostgreSQL para varias cajas a la vez
+- [ ] Etiquetas con código de barras por SKU
+- [ ] Importación del catálogo desde Excel
+- [ ] Panel web para el encargado de tienda
 
 ## 📄 Licencia
 

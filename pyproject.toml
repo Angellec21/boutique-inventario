@@ -1,6 +1,6 @@
 [project]
 name = "boutique-inventario"
-version = "0.3.0"
+version = "1.0.0"
 description = "Inventario para tiendas de ropa: variantes por talla y color, stock por sucursal"
 requires-python = ">=3.11"
 authors = [{ name = "Angel Emanuel Lecaro Quispe" }]
